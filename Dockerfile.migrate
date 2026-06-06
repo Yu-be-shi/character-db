@@ -1,3 +1,4 @@
 FROM arigaio/atlas:latest
 COPY schema.sql /schema.sql
 COPY migrations /migrations
+ENTRYPOINT ["/atlas", "migrate", "apply", "--dir", "file:///migrations"]
