@@ -1,4 +1,12 @@
-FROM arigaio/atlas:latest
-COPY schema.sql /schema.sql
+# atlas バイナリ取り出し用ステージ
+FROM arigaio/atlas:latest AS atlas
+
+# 実行イメージ: psql を持つ postgres-alpine に atlas を載せる。
+# atlas でテーブルを適用し、psql でビュー/関数（views/*.sql）を冪等適用するため両方が要る。
+FROM postgres:16-alpine
+COPY --from=atlas /atlas /usr/local/bin/atlas
 COPY migrations /migrations
-ENTRYPOINT ["/atlas", "migrate", "apply", "--dir", "file:///migrations"]
+COPY views /views
+COPY migrate-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh
+RUN chmod +x /usr/local/bin/migrate-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/migrate-entrypoint.sh"]
