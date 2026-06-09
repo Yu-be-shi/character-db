@@ -28,6 +28,9 @@ CREATE TABLE core_characters (
     size_middle SMALLINT CHECK (size_middle > 0),
     size_bottom SMALLINT CHECK (size_bottom > 0),
 
+    -- 楽観ロック用バージョン。更新のたびに +1 する（API が WHERE version=? で競合検知）。
+    version BIGINT NOT NULL DEFAULT 1,
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
