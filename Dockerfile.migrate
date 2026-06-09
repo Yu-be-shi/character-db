@@ -7,6 +7,7 @@ FROM postgres:16-alpine
 COPY --from=atlas /atlas /usr/local/bin/atlas
 COPY migrations /migrations
 COPY views /views
+COPY seeds /seeds
 COPY migrate-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh
 RUN chmod +x /usr/local/bin/migrate-entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/migrate-entrypoint.sh"]

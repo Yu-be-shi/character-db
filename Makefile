@@ -12,6 +12,8 @@
 #   - テーブル・ENUM・インデックス … この Makefile の Atlas（宣言的差分）が管理
 #   - ビュー・関数・トリガー       … views/*.sql に冪等SQL（CREATE OR REPLACE 等）で記述し、
 #                                     character-db-migrate が atlas apply 後に psql で適用
+#   - マスタ初期データ             … seeds/*.sql に冪等SQL（INSERT ... ON CONFLICT DO NOTHING 等）で記述し、
+#                                     character-db-migrate が views 適用後に psql で適用
 #   - 安全リンタ                   … make lint（squawk・無料）
 ATLAS := $(shell which atlas 2>/dev/null)
 
@@ -34,8 +36,9 @@ DEV_DB_URL := postgres://atlas:atlas@$(PG_NAME):5432/dev?sslmode=disable&search_
 # 1. テーブル等: schema.sql を編集 → make migration name=<説明>（差分を自動生成）→ make hash
 #    （生成SQLの修正が要るときは schema.sql を直して再生成。手書き追記はしない）
 # 2. ビュー/関数: views/*.sql を編集（CREATE OR REPLACE 等の冪等SQL。Atlas 管理外）
-# 3. make lint で安全点検（squawk）
-# 適用は character-db-migrate が「atlas apply（テーブル）→ psql で views 適用」を行う。
+# 3. マスタ初期データ: seeds/*.sql を編集（INSERT ... ON CONFLICT DO NOTHING 等の冪等SQL。Atlas 管理外）
+# 4. make lint で安全点検（squawk）
+# 適用は character-db-migrate が「atlas apply（テーブル）→ psql で views 適用 → psql で seeds 適用」を行う。
 
 migration:
 ifndef name
@@ -82,4 +85,4 @@ endif
 # 除外ルールとその理由は squawk.toml を参照。docker さえあれば動く。
 lint:
 	docker run --rm -v "$(PWD):/work" -w /work $(SQUAWK_IMG) \
-		sh -c "npx --yes squawk-cli@latest -c squawk.toml migrations/*.sql views/*.sql"
+		sh -c "npx --yes squawk-cli@latest -c squawk.toml migrations/*.sql views/*.sql seeds/*.sql"
