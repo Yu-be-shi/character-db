@@ -11,10 +11,11 @@
 - `schema.sql` … テーブル・ENUM・インデックスの宣言的定義（Atlas が管理する「あるべき姿」）
 - `migrations/` … `schema.sql` との差分から **Atlas** が自動生成するマイグレーション
 - `views/` … ビュー・関数等の冪等SQL（`CREATE OR REPLACE` 等。Atlas 管理外）
+- `seeds/` … マスタ初期データの冪等SQL（`INSERT ... ON CONFLICT DO NOTHING` 等。Atlas 管理外）
 - `squawk.toml` … 安全リンタ squawk の設定（除外ルールと理由）
 - `Dockerfile` … 空の PostgreSQL サーバーのイメージ定義
 - `Dockerfile.migrate` … 適用用イメージ。`atlas migrate apply`（テーブル）→ `psql` で `views/*.sql`
-  を冪等適用する（`migrate-entrypoint.sh`）
+  → `psql` で `seeds/*.sql` を冪等適用する（`migrate-entrypoint.sh`）
 
 ### スキーマ管理は「ハイブリッド」方式（すべて無料）
 
@@ -25,7 +26,8 @@ Atlas 無料版はビュー・関数・トリガーと `migrate lint` が Pro（
 |---|---|---|
 | テーブル・ENUM・インデックス | **Atlas（宣言的差分）** | `schema.sql` が唯一の正。ALTER/DROP/型変更を安全に自動生成 |
 | ビュー・関数・トリガー | **`views/*.sql` の冪等SQL** | `CREATE OR REPLACE` 等。何度適用しても安全。`make migration` の差分計算に巻き込まれない（Atlas 管理外なので Pro ゲートも踏まない） |
-| 安全リンタ | **squawk（無料）** | `make lint`。破壊的変更・ロック等を検出 |
+| マスタ初期データ | **`seeds/*.sql` の冪等SQL** | `INSERT ... ON CONFLICT DO NOTHING` 等。Atlas はデータ（行）を管理しないため分離。`core_characters.race_id` は NOT NULL 必須でアプリの作成フォームが `races` 一覧に依存するため、最低限のマスタ（`races`）をここで投入する |
+| 安全リンタ | **squawk（無料）** | `make lint`。`migrations` + `views` + `seeds` の破壊的変更・ロック等を検出 |
 
 Atlas は `schema.sql`（テーブルのみ）を見て差分するため、`migrations/` への手書き追記はしない
 （直したいときは `schema.sql` を直して再生成）。ビューの「あるべき定義」は `views/` に置く。
@@ -55,8 +57,11 @@ make hash                    # migrations/atlas.sum を更新してコミット
 # ── ビュー・関数（冪等SQL）──
 # views/*.sql を編集（CREATE OR REPLACE 等）
 
+# ── マスタ初期データ（冪等SQL）──
+# seeds/*.sql を編集（INSERT ... ON CONFLICT DO NOTHING 等）
+
 # ── 安全点検（squawk）──
-make lint                    # migrations と views の SQL を静的解析
+make lint                    # migrations / views / seeds の SQL を静的解析
 ```
 
 差分計算には使い捨ての一時 Postgres（dev database）を使う。`docker` さえあれば動き、
