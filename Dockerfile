@@ -1,4 +1,4 @@
-FROM postgres:16-alpine
+FROM postgres:18-alpine
 
 # カスタム設定が必要になった場合はここに追加する
 # COPY config/postgresql.conf /etc/postgresql/postgresql.conf
