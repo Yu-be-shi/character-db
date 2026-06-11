@@ -21,6 +21,36 @@ BEGIN
         VALUES ('_behavior_test_char', v_race_id, 'female')
         RETURNING id INTO v_char_id;
 
+    -- 0. 予約パターン: 作成直後は pending（confirmed_at IS NULL）。
+    --    v1 に出ず、update/soft_delete は CH404。confirm で可視化、再 confirm は冪等。
+    SELECT count(*) INTO v_count FROM v1_characters WHERE id = v_char_id;
+    IF v_count <> 0 THEN
+        RAISE EXCEPTION '予約パターン: 未確定の行が v1_characters に見えている';
+    END IF;
+
+    v_caught := FALSE;
+    BEGIN
+        PERFORM update_character(v_char_id, NULL, 'x', NULL, v_race_id, 'female',
+                                 NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    EXCEPTION WHEN SQLSTATE 'CH404' THEN
+        v_caught := TRUE;
+    END;
+    IF NOT v_caught THEN
+        RAISE EXCEPTION 'update_character: 未確定の行が更新できてしまう（CH404 を期待）';
+    END IF;
+
+    v_res := confirm_character(v_char_id);
+    IF v_res.confirmed_at IS NULL THEN
+        RAISE EXCEPTION 'confirm_character: confirmed_at が立っていない';
+    END IF;
+    -- 再 confirm は冪等（例外を上げず同じ行を返す）。
+    PERFORM confirm_character(v_char_id);
+    -- 確定後は v1 に出る（version は 1 のまま）。
+    SELECT count(*) INTO v_count FROM v1_characters WHERE id = v_char_id AND version = 1;
+    IF v_count <> 1 THEN
+        RAISE EXCEPTION '予約パターン: 確定後に v1_characters へ昇格していない';
+    END IF;
+
     -- 1. update_character: 正しい version で更新 → version 1→2。
     --   （updated_at トリガーの前進はトランザクション内では NOW() が固定で観測できないため、
     --     この DO ブロックの外＝別トランザクションで検査する。末尾参照。）
@@ -102,6 +132,15 @@ BEGIN
         RAISE EXCEPTION 'gender_enum: 不正値が弾かれていない';
     END IF;
 
+    -- 7.5 gc_unconfirmed_characters: 古い未確定予約だけを物理回収し、確定済み行には触れない。
+    INSERT INTO core_characters (name, race_id, gender, created_at)
+        VALUES ('_behavior_pending_old', v_race_id, 'other', NOW() - INTERVAL '2 hours');
+    PERFORM gc_unconfirmed_characters(INTERVAL '1 hour');
+    SELECT count(*) INTO v_count FROM core_characters WHERE name = '_behavior_pending_old';
+    IF v_count <> 0 THEN
+        RAISE EXCEPTION 'gc_unconfirmed_characters: 古い未確定予約が回収されていない';
+    END IF;
+
     -- 後片付け（テストデータを残さない）。
     DELETE FROM core_characters WHERE id = v_char_id;
     DELETE FROM races WHERE id = v_race_id;
@@ -113,8 +152,9 @@ $$;
 -- 8. set_updated_at トリガー: 別トランザクションの UPDATE で updated_at が前進する。
 --    （psql の自動コミットにより、ここからの各文はそれぞれ別トランザクション）
 INSERT INTO races (name) VALUES ('_behavior_trigger_race');
-INSERT INTO core_characters (name, race_id, gender)
-    SELECT '_behavior_trigger_char', id, 'unknown' FROM races WHERE name = '_behavior_trigger_race';
+-- 予約パターン: update_character は確定済み行のみ対象のため confirmed_at を立てて投入する。
+INSERT INTO core_characters (name, race_id, gender, confirmed_at)
+    SELECT '_behavior_trigger_char', id, 'unknown', NOW() FROM races WHERE name = '_behavior_trigger_race';
 
 SELECT c.id AS tid, c.updated_at AS before_ts, c.race_id AS rid
   FROM core_characters c WHERE c.name = '_behavior_trigger_char' \gset

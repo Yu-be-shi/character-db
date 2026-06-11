@@ -50,9 +50,11 @@ DECLARE
     v_result  core_characters;
 BEGIN
     -- 生存している行をロックして取得（FOR UPDATE で「検査→更新」の間の同時更新を直列化）。
+    -- 予約パターン: 確定済み（confirmed_at IS NOT NULL）の生存行のみを対象にする。
+    -- 未確定（pending）の予約は「まだ存在しない」ため update/soft_delete からは CH404 扱い。
     SELECT * INTO v_current
       FROM core_characters
-     WHERE id = p_id AND deleted_at IS NULL
+     WHERE id = p_id AND deleted_at IS NULL AND confirmed_at IS NOT NULL
      FOR UPDATE;
 
     IF NOT FOUND THEN
@@ -101,9 +103,11 @@ DECLARE
     v_current core_characters;
     v_result  core_characters;
 BEGIN
+    -- 予約パターン: 確定済み（confirmed_at IS NOT NULL）の生存行のみを対象にする。
+    -- 未確定（pending）の予約は「まだ存在しない」ため update/soft_delete からは CH404 扱い。
     SELECT * INTO v_current
       FROM core_characters
-     WHERE id = p_id AND deleted_at IS NULL
+     WHERE id = p_id AND deleted_at IS NULL AND confirmed_at IS NOT NULL
      FOR UPDATE;
 
     IF NOT FOUND THEN
@@ -123,5 +127,57 @@ BEGIN
      RETURNING * INTO v_result;
 
     RETURN v_result;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 予約の確定（reservation パターン）。作成直後の pending 行に所有者が紐づいた後、
+-- 消費者がこれを呼んで confirmed_at を立て、可視データ（v1_characters / API の読み取り）に昇格させる。
+-- 冪等: 再送（既に確定済み）でも updated_at を動かさず現状の行を返す。
+-- 不在 / 論理削除済み / TTL 回収済みは CH404（消費者は確定不能を検知して自分のリンクを掃除する）。
+DROP FUNCTION IF EXISTS confirm_character(UUID);
+CREATE FUNCTION confirm_character(p_id UUID)
+RETURNS core_characters AS $$
+DECLARE
+    v_result core_characters;
+BEGIN
+    -- 未確定のものだけ確定する（confirmed_at IS NULL）。確定できれば updated_at トリガーが動く。
+    UPDATE core_characters
+       SET confirmed_at = NOW()
+     WHERE id = p_id AND deleted_at IS NULL AND confirmed_at IS NULL
+     RETURNING * INTO v_result;
+
+    IF FOUND THEN
+        RETURN v_result;
+    END IF;
+
+    -- 既に確定済みなら冪等成功として現状の行を返す（updated_at を動かさない）。
+    SELECT * INTO v_result
+      FROM core_characters
+     WHERE id = p_id AND deleted_at IS NULL AND confirmed_at IS NOT NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'character % not found (unconfirmed reservation may have been reclaimed)', p_id
+            USING ERRCODE = 'CH404';
+    END IF;
+
+    RETURN v_result;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 確定されなかった予約（pending）の TTL 回収。物理 DELETE するが、対象は「未確定の予約」
+-- のみで、可視データ（確定済み）には一切触れない＝origin 自身の管轄での後始末。
+-- 消費者が origin を削除しなくて済むようにするための関数で、API のスイーパーが定期的に呼ぶ。
+-- 戻り値は削除件数（ログ・監視用）。
+DROP FUNCTION IF EXISTS gc_unconfirmed_characters(INTERVAL);
+CREATE FUNCTION gc_unconfirmed_characters(p_age INTERVAL)
+RETURNS integer AS $$
+DECLARE
+    v_count integer;
+BEGIN
+    DELETE FROM core_characters
+     WHERE confirmed_at IS NULL
+       AND created_at < NOW() - p_age;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
 END;
 $$ LANGUAGE plpgsql;

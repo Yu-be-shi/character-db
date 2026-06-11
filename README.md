@@ -91,19 +91,33 @@ docker compose up -d            # PostgreSQL 起動 + マイグレーション�
 
 ### 読み取り
 
-- 一覧・参照は **`v1_characters` ビュー**を使う（`WHERE deleted_at IS NULL` 適用済み・
-  `version` / `updated_at` を含む）。テーブル直読みする場合も論理削除（`deleted_at IS NULL`）を
-  必ず適用すること。
+- 一覧・参照は **`v1_characters` ビュー**を使う（`WHERE deleted_at IS NULL AND confirmed_at IS NOT NULL`
+  適用済み・`version` / `updated_at` を含む）。テーブル直読みする場合も論理削除（`deleted_at IS NULL`）と
+  **確定済み（`confirmed_at IS NOT NULL`）** を必ず適用すること。
+
+### 予約パターン（作成の整合性）
+
+キャラ作成は複数ストアにまたがり原子的にできないため、**予約（reservation）パターン**を取る:
+
+- `core_characters.confirmed_at` … NULL の間は **pending（予約中・不可視）**。所有者を紐づけた後に
+  `confirm_character` で `NOW()` を立てて **active（可視）** へ昇格させる。これで「**可視な行は必ず
+  所有者を持つ**」を保証する。
+- `core_characters.creation_token` … 作成の冪等トークン（消費者の `Idempotency-Key` 由来）。部分一意
+  インデックスで同一トークンの二重作成を弾く（NULL は対象外）。
+- 確定されなかった pending は `gc_unconfirmed_characters` が物理回収する（**origin 自身の後始末**。
+  消費者は origin を削除しない）。
 
 ### 書き込み（生の UPDATE / DELETE を書かない）
 
-更新・削除の手順的な不変条件（楽観ロック・論理削除）は **DB 関数に集約**してあり、
-各言語の API は関数を呼ぶだけにする:
+更新・削除・確定・回収の手順的な不変条件は **DB 関数に集約**してあり、各言語の API は関数を呼ぶだけにする
+（`update` / `soft_delete` は確定済み行のみを対象とする）:
 
 | 操作 | 関数 | 説明 |
 |---|---|---|
-| 全置換更新 | `update_character(p_id, p_expected_version, ...)` | `FOR UPDATE` で行ロック → 版検査 → 更新 + `version + 1`。`p_expected_version` が NULL なら版検査なし |
-| 論理削除 | `soft_delete_character(p_id, p_expected_version DEFAULT NULL)` | `deleted_at` を設定（物理 DELETE しない）。版指定時は update と同じ契約 |
+| 全置換更新 | `update_character(p_id, p_expected_version, ...)` | `FOR UPDATE` で行ロック → 版検査 → 更新 + `version + 1`。確定済み行のみ。`p_expected_version` が NULL なら版検査なし |
+| 論理削除 | `soft_delete_character(p_id, p_expected_version DEFAULT NULL)` | `deleted_at` を設定（物理 DELETE しない）。確定済み行のみ。版指定時は update と同じ契約 |
+| 予約の確定 | `confirm_character(p_id)` | pending → active（`confirmed_at` を設定）。冪等。不在/削除/回収済みは CH404 |
+| 予約の回収 | `gc_unconfirmed_characters(p_age INTERVAL)` | `p_age` より古い未確定（pending）を物理 DELETE。戻り値は削除件数。確定済みには触れない |
 
 ### エラー契約（カスタム SQLSTATE）
 
@@ -136,8 +150,8 @@ views / seeds は `psql -1`（ファイル単位の単一トランザクショ�
   忘れの検知）を行う。**`schema.sql` を編集したら `make migration` と `make hash` を忘れない**こと。
 - **更新通知（`.github/workflows/notify-consumers.yml`）** … スキーマ関連ファイルが develop に
   マージされると、Repository Variable `CONSUMER_REPOS` に列挙された消費者リポジトリへ
-  `repository_dispatch`（`character-db-updated`）を送る。受け取った API 側は自動で submodule
-  bump + codegen 再実行 + 追従 PR 作成を行う（例: character-api-go の `schema-sync.yml`）。
+  `repository_dispatch`（`character-db-updated`）を送る。受け取った API 側は自動でスキーマファイルの
+  vendoring 更新 + codegen 再実行 + 追従 PR 作成を行う（例: character-api-go の `schema-sync.yml`）。
   API を増やすときは `CONSUMER_REPOS` に追記するだけでよい。
 
 ## views/ の命名規約

@@ -36,4 +36,6 @@ SELECT
     c.updated_at
 FROM core_characters c
 JOIN races r ON c.race_id = r.id
-WHERE c.deleted_at IS NULL;
+-- 確定済み（予約パターンの active）かつ生存行のみを公開する。未確定（pending）の
+-- 予約は「まだ存在しないデータ」として読み取りコントラクトに出さない。
+WHERE c.deleted_at IS NULL AND c.confirmed_at IS NOT NULL;
