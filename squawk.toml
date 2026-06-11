@@ -8,6 +8,9 @@ excluded_rules = [
     # その場合 CONCURRENTLY は不要、かつトランザクション内では使えない。
     # 既存の大きなテーブルへ後からインデックスを足すときは手動で CONCURRENTLY を使うこと。
     "require-concurrent-index-creation",
+    # 同上（削除側）。テーブルが小さくロック保持は一瞬で、本番 DB も ephemeral（毎日再構築）。
+    # 稼働中の大きなテーブルからインデックスを外すときは手動で DROP INDEX CONCURRENTLY を使うこと。
+    "require-concurrent-index-deletion",
     # Atlas はバージョン管理付きで各マイグレーションを一度だけ適用する（途中再実行が無い）ため、
     # IF NOT EXISTS による冪等化は冗長。
     "prefer-robust-stmts",

@@ -1,0 +1,82 @@
+# character-db 自身の CI。
+# スキーマ変更（migrations / views / seeds / schema.sql）の PR で、
+#   1) atlas migrate validate … atlas.sum の整合（make hash 忘れの検知）
+#   2) squawk                 … 破壊的変更・ロック等の安全リンタ
+#   3) 適用テスト             … 本番同等の migrate イメージでテスト DB に
+#                               「atlas apply → views → seeds」を流し切れることを検証
+# を行う。infra リポジトリの CI に依存せず、この変更が入る PR 自身で検証する。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+# ツールのバージョンは再現性のため固定（更新は dependabot / 手動 PR で）。
+env:
+  ATLAS_IMAGE: arigaio/atlas:1.2.2
+  SQUAWK_VERSION: 2.57.0
+
+jobs:
+  validate:
+    name: Validate schema & migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: characters_test
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: testpassword
+        # --network host のコンテナから localhost:5432 で到達できるよう公開する
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d characters_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate atlas.sum integrity
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}/migrations:/migrations \
+            "$ATLAS_IMAGE" \
+            migrate validate --dir "file:///migrations"
+
+      - name: Lint SQL (squawk)
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/work -w /work node:20-slim \
+            sh -c "npx --yes squawk-cli@$SQUAWK_VERSION -c squawk.toml migrations/*.sql views/*.sql seeds/*.sql"
+
+      - name: Build migration image
+        run: docker build -f Dockerfile.migrate -t cdb-migrate .
+
+      - name: Apply migrations + views + seeds against test DB
+        run: |
+          docker run --rm --network host cdb-migrate \
+            "--url=postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable"
+
+      # schema.sql（宣言）と migrations/（差分の積み上げ）が乖離していないことを検証する。
+      # 乖離があれば「schema.sql を編集したのに make migration を忘れた」サイン。
+      # dev DB は atlas の作業用スクラッチのため、適用テスト済みの DB とは別に空で用意する。
+      - name: Check schema.sql / migrations drift
+        run: |
+          docker run --rm --network host postgres:16-alpine \
+            psql "postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable" \
+            -c "CREATE DATABASE atlas_dev;"
+          docker run --rm --network host \
+            -v ${{ github.workspace }}:/workspace -w /workspace \
+            "$ATLAS_IMAGE" \
+            schema diff \
+            --from "file://migrations" \
+            --to "file://schema.sql" \
+            --dev-url "postgres://app:testpassword@localhost:5432/atlas_dev?sslmode=disable&search_path=public" \
+            | tee /tmp/drift.txt
+          grep -q "Schemas are synced" /tmp/drift.txt || {
+            echo "::error::schema.sql と migrations/ が乖離しています（make migration を実行してください）"
+            exit 1
+          }

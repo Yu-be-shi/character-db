@@ -38,4 +38,9 @@ CREATE TABLE core_characters (
 );
 
 CREATE INDEX idx_core_characters_race_id ON core_characters(race_id);
-CREATE INDEX idx_core_characters_gender ON core_characters(gender);
+
+-- 一覧取得（v1_characters / API の List）は常に「生存行を created_at, id 順」で読む。
+-- 削除済み行をスキャンしない部分インデックスでこのアクセスパスを直接支える。
+-- ※ gender 単独のインデックスは ENUM 4 値の低カーディナリティで実用上使われないため持たない。
+CREATE INDEX idx_core_characters_active_created_at
+    ON core_characters (created_at, id) WHERE deleted_at IS NULL;

@@ -84,21 +84,40 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- 論理削除。物理 DELETE を各言語に書かせない。既に削除済み / 不在なら CH404。
+--   p_expected_version が非 NULL なら update_character と同じ CH412 契約で
+--   版一致を検査する（「編集中の他者が消した/消された」競合の検知に使える）。
+--   省略（NULL）時は無条件削除＝既存呼び出しと後方互換。
 DROP FUNCTION IF EXISTS soft_delete_character(UUID);
-CREATE FUNCTION soft_delete_character(p_id UUID)
+DROP FUNCTION IF EXISTS soft_delete_character(UUID, BIGINT);
+CREATE FUNCTION soft_delete_character(
+    p_id               UUID,
+    p_expected_version BIGINT DEFAULT NULL
+)
 RETURNS core_characters AS $$
 DECLARE
-    v_result core_characters;
+    v_current core_characters;
+    v_result  core_characters;
 BEGIN
-    UPDATE core_characters
-       SET deleted_at = NOW()
+    SELECT * INTO v_current
+      FROM core_characters
      WHERE id = p_id AND deleted_at IS NULL
-     RETURNING * INTO v_result;
+     FOR UPDATE;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'character % not found or already deleted', p_id
             USING ERRCODE = 'CH404';
     END IF;
+
+    IF p_expected_version IS NOT NULL AND v_current.version <> p_expected_version THEN
+        RAISE EXCEPTION 'character % version conflict (expected %, actual %)',
+            p_id, p_expected_version, v_current.version
+            USING ERRCODE = 'CH412';
+    END IF;
+
+    UPDATE core_characters
+       SET deleted_at = NOW()
+     WHERE id = p_id
+     RETURNING * INTO v_result;
 
     RETURN v_result;
 END;
