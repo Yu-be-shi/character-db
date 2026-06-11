@@ -84,3 +84,78 @@ make lint                    # migrations / views / seeds の SQL を静的解�
 # character-db-infra ディレクトリから実行
 docker compose up -d            # PostgreSQL 起動 + マイグレーション適用
 ```
+
+## 読み書きのコントラクト（全 API 共通）
+
+複数 API が同じ DB を共有するため、「読み方」「書き方」をここで固定する。
+
+### 読み取り
+
+- 一覧・参照は **`v1_characters` ビュー**を使う（`WHERE deleted_at IS NULL AND confirmed_at IS NOT NULL`
+  適用済み・`version` / `updated_at` を含む）。テーブル直読みする場合も論理削除（`deleted_at IS NULL`）と
+  **確定済み（`confirmed_at IS NOT NULL`）** を必ず適用すること。
+
+### 予約パターン（作成の整合性）
+
+キャラ作成は複数ストアにまたがり原子的にできないため、**予約（reservation）パターン**を取る:
+
+- `core_characters.confirmed_at` … NULL の間は **pending（予約中・不可視）**。所有者を紐づけた後に
+  `confirm_character` で `NOW()` を立てて **active（可視）** へ昇格させる。これで「**可視な行は必ず
+  所有者を持つ**」を保証する。
+- `core_characters.creation_token` … 作成の冪等トークン（消費者の `Idempotency-Key` 由来）。部分一意
+  インデックスで同一トークンの二重作成を弾く（NULL は対象外）。
+- 確定されなかった pending は `gc_unconfirmed_characters` が物理回収する（**origin 自身の後始末**。
+  消費者は origin を削除しない）。
+
+### 書き込み（生の UPDATE / DELETE を書かない）
+
+更新・削除・確定・回収の手順的な不変条件は **DB 関数に集約**してあり、各言語の API は関数を呼ぶだけにする
+（`update` / `soft_delete` は確定済み行のみを対象とする）:
+
+| 操作 | 関数 | 説明 |
+|---|---|---|
+| 全置換更新 | `update_character(p_id, p_expected_version, ...)` | `FOR UPDATE` で行ロック → 版検査 → 更新 + `version + 1`。確定済み行のみ。`p_expected_version` が NULL なら版検査なし |
+| 論理削除 | `soft_delete_character(p_id, p_expected_version DEFAULT NULL)` | `deleted_at` を設定（物理 DELETE しない）。確定済み行のみ。版指定時は update と同じ契約 |
+| 予約の確定 | `confirm_character(p_id)` | pending → active（`confirmed_at` を設定）。冪等。不在/削除/回収済みは CH404 |
+| 予約の回収 | `gc_unconfirmed_characters(p_age INTERVAL)` | `p_age` より古い未確定（pending）を物理 DELETE。戻り値は削除件数。確定済みには触れない |
+
+### エラー契約（カスタム SQLSTATE）
+
+| SQLSTATE | 意味 | API が返すべき HTTP |
+|---|---|---|
+| `CH404` | 対象が不在 or 削除済み | 404 Not Found |
+| `CH412` | 楽観ロックの版不一致 | 412 Precondition Failed |
+
+構造の不変条件（ENUM・CHECK・FK・UNIQUE）は DB が標準 SQLSTATE（`22P02` / `23514` /
+`23503` / `23505`）で弾くため、関数では扱わない。各 API はこれらを各言語のエラー型に変換する。
+
+これらの振る舞いは CI（`tests/behavior.sql`）でリグレッション検知している。
+
+## 適用（character-db-migrate）の接続情報
+
+`migrate-entrypoint.sh` は接続先を次の優先順で受け取る（いずれも atlas が解釈できる
+`postgres://...` URL 形式であること）:
+
+1. command 引数 `--url=<DSN>`（ローカル compose はこの形）
+2. 環境変数 `DB_DSN`（本番 ECS。exec 形式の command は `$(VAR)` を展開しないため環境変数で渡す）
+
+views / seeds は `psql -1`（ファイル単位の単一トランザクション）で適用するため、
+`DROP FUNCTION → CREATE FUNCTION` を含むファイルでも「関数が無い瞬間」を稼働中の API に見せない。
+
+## CI とスキーマ更新通知
+
+- **CI（`.github/workflows/ci.yml`）** … PR ごとに (1) `atlas migrate validate`（`make hash`
+  忘れの検知）、(2) squawk、(3) 本番同等 migrate イメージでの適用テスト、(4) `tests/behavior.sql`
+  による振る舞いテスト、(5) `schema.sql` と `migrations/` の乖離チェック（`make migration`
+  忘れの検知）を行う。**`schema.sql` を編集したら `make migration` と `make hash` を忘れない**こと。
+- **更新通知（`.github/workflows/notify-consumers.yml`）** … スキーマ関連ファイルが develop に
+  マージされると、Repository Variable `CONSUMER_REPOS` に列挙された消費者リポジトリへ
+  `repository_dispatch`（`character-db-updated`）を送る。受け取った API 側は自動でスキーマファイルの
+  vendoring 更新 + codegen 再実行 + 追従 PR 作成を行う（例: character-api-go の `schema-sync.yml`）。
+  API を増やすときは `CONSUMER_REPOS` に追記するだけでよい。
+
+## views/ の命名規約
+
+`views/*.sql` は **辞書順（グロブ順）に適用**されるため、依存順に数値プレフィクスを付ける:
+`00_`（トリガー等の基盤）→ `10_`（関数）→ `v1_`（公開ビュー。`v` は数値より後に並ぶ）。
+新しいファイルを足すときは適用順に注意すること。

@@ -6,7 +6,7 @@
 
 ## チェックリスト
 - [ ] CI が green（test / lint / typecheck / 各種スキャン）
-- [ ] 依存方向・所有権境界を守っている（CLAUDE.md / CONTRIBUTING.md）
+- [ ] 依存方向・所有権境界を守っている（メタリポジトリの CLAUDE.md / README 参照）
 - [ ] ドキュメント（README / 該当 README / 必要なら ADR・CHANGELOG）を更新した
 - [ ] 破壊的なスキーマ変更は無い（ある場合は expand→contract で全 API 対応）
 

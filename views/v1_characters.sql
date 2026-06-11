@@ -29,7 +29,13 @@ SELECT
     c.size_top    AS top_value,
     c.size_middle AS waist_value,
     c.size_bottom AS hip_value,
-    c.created_at
+    c.created_at,
+    -- 楽観ロック（update_character の p_expected_version）に必要。
+    -- ビュー利用者がテーブル直読みに戻らなくて済むよう、読み取りコントラクトに含める。
+    c.version,
+    c.updated_at
 FROM core_characters c
 JOIN races r ON c.race_id = r.id
-WHERE c.deleted_at IS NULL;
+-- 確定済み（予約パターンの active）かつ生存行のみを公開する。未確定（pending）の
+-- 予約は「まだ存在しないデータ」として読み取りコントラクトに出さない。
+WHERE c.deleted_at IS NULL AND c.confirmed_at IS NOT NULL;
