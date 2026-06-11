@@ -13,10 +13,13 @@
 --   ※ gender 不正・CHECK 違反・FK 違反などの “構造” の不変条件は引き続き DB の型/制約が
 --      標準 SQLSTATE（22P02 / 23514 / 23503 等）で弾くため、ここでは扱わない。
 --
--- 冪等性: CREATE OR REPLACE FUNCTION で何度適用しても安全。ただし RETURNS core_characters は
---   テーブルに紐づく複合型のため、core_characters に列を追加すると「戻り値型を変更できない」
---   エラーになる。それを避けるため、先頭で現在のシグネチャを DROP FUNCTION IF EXISTS してから
---   作り直す。引数を変更したときはこの DROP のシグネチャも合わせて更新すること。
+-- 冪等性: DROP FUNCTION IF EXISTS（既知のシグネチャ）→ CREATE FUNCTION で何度適用しても安全。
+--   CREATE OR REPLACE を使わないのは、RETURNS core_characters がテーブルに紐づく複合型で、
+--   core_characters に列を追加すると「戻り値型を変更できない」エラーになるため。
+--   引数を変更したときは DROP のシグネチャも合わせて更新すること（旧シグネチャの
+--   オーバーロード残存は呼び出しの曖昧エラーや旧ロジック実行の原因になる）。
+--   適用は psql -1（ファイル単位の単一トランザクション）なので、DROP→CREATE の間の
+--   「関数が無い瞬間」が稼働中 API から見えることはない。
 
 -- 楽観ロック付き全置換更新（PUT 相当）。
 --   p_expected_version が NULL なら version 検査をスキップ（強制更新）。

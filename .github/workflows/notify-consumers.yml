@@ -1,0 +1,52 @@
+# イベント駆動のスキーマ更新通知（プッシュは通知だけ・取得は各消費者が行うプル型）。
+#
+# スキーマ関連ファイルが develop へ push（= PR マージ）されたら、
+# 「DB が更新された」というイベント（repository_dispatch）を消費者リポジトリへ送る。
+# 受け取った側（例: character-api-go の schema-sync.yml）は自分で最新スキーマを
+# 取得して sqlc generate 等を再実行し、差分があれば自リポジトリに追従 PR を作る。
+#
+# 設計メモ:
+#   - GitHub に「真のブロードキャスト」は無いため、送り先は Repository Variable
+#     CONSUMER_REPOS（空白区切りの owner/repo）で構成として持つ。ワークフロー本体は
+#     送り先を知らない＝API が増えても変数に1行足すだけで、このファイルは無傷。
+#   - 依存方向（character-db → apis）はコード上は保たれる: ここは「更新があった」事実を
+#     放送するだけで、消費者の中身（言語・生成方法）には一切関知しない。
+#
+# 必要な設定:
+#   Secrets  GH_PAT         … repo スコープ PAT（repository_dispatch は他リポジトリへの
+#                             送信に PAT が必要。GITHUB_TOKEN では送れない）
+#   Variables CONSUMER_REPOS … 例: "Yu-be-shi/character-api-go"（複数は空白区切り）
+name: Notify consumers (schema updated)
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "schema.sql"
+      - "migrations/**"
+      - "views/**"
+      - "seeds/**"
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send repository_dispatch to consumers
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          CONSUMERS: ${{ vars.CONSUMER_REPOS }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONSUMERS:-}" ]; then
+            echo "::warning::CONSUMER_REPOS が未設定のため通知先がありません"
+            exit 0
+          fi
+          for repo in $CONSUMERS; do
+            echo "notify -> $repo (sha=$SHA)"
+            gh api "repos/$repo/dispatches" \
+              -f event_type=character-db-updated \
+              -F "client_payload[sha]=$SHA" \
+              -F "client_payload[ref]=$REF"
+          done

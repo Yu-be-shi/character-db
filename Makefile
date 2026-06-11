@@ -66,6 +66,9 @@ else
 		if docker exec $(PG_NAME) psql -U atlas -d dev -c 'select 1' >/dev/null 2>&1; then break; fi; \
 		sleep 1; \
 	done; \
+	if ! docker exec $(PG_NAME) psql -U atlas -d dev -c 'select 1' >/dev/null 2>&1; then \
+		echo "✗ 一時 Postgres が 60 秒以内に起動しませんでした" >&2; exit 1; \
+	fi; \
 	docker run --rm --network $(NET) -v "$(PWD):/workspace" -w /workspace \
 		$(ATLAS_IMG) migrate diff $(name) \
 		--dir "file://migrations" \

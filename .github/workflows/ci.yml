@@ -60,11 +60,21 @@ jobs:
           docker run --rm --network host cdb-migrate \
             "--url=postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable"
 
+      # 適用が通るだけでなく、複数 API が依存する「振る舞い」
+      # （CH404/CH412 のエラー契約・version +1・updated_at トリガー・論理削除の読み書き）
+      # をリグレッション検知する。
+      - name: Behavior tests (DB functions / trigger / view)
+        run: |
+          docker run --rm --network host -v ${{ github.workspace }}/tests:/tests postgres:16-alpine \
+            psql "postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable" \
+            -v ON_ERROR_STOP=1 -f /tests/behavior.sql
+
       # schema.sql（宣言）と migrations/（差分の積み上げ）が乖離していないことを検証する。
       # 乖離があれば「schema.sql を編集したのに make migration を忘れた」サイン。
       # dev DB は atlas の作業用スクラッチのため、適用テスト済みの DB とは別に空で用意する。
       - name: Check schema.sql / migrations drift
         run: |
+          set -o pipefail  # atlas 自体の失敗を tee に飲ませない（grep の誤メッセージで落とさない）
           docker run --rm --network host postgres:16-alpine \
             psql "postgres://app:testpassword@localhost:5432/characters_test?sslmode=disable" \
             -c "CREATE DATABASE atlas_dev;"
